@@ -1,104 +1,95 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
+import json
+import os
 
-# 1. Setup a lightweight database to store live votes
-conn = sqlite3.connect('shark_tank_votes.db', check_same_thread=False)
-c = conn.cursor()
-c.execute('CREATE TABLE IF NOT EXISTS votes (name TEXT, case_study TEXT, offer TEXT)')
-conn.commit()
+# --- 1. SETUP SIMPLE DATABASE ---
+# Streamlit Cloud needs a way to save votes across different phones. 
+# We use a simple temporary JSON file which is perfect for a 15-minute presentation.
+DB_FILE = "live_votes.json"
 
-# 2. Configure the page
-st.set_page_config(page_title="VC Shark Tank", page_icon="🦈", layout="wide")
-st.title("🦈 Mini Shark Tank: VC Edition")
+# Define the cases and the four VC options for each
+CASES = {
+    "Zomato (formerly Foodiebay)": [
+        "A: Expand aggressively into 10 new Tier-1 cities",
+        "B: Build an in-house food delivery fleet",
+        "C: Invest heavily in restaurant B2B software/POS",
+        "D: Launch massive discount campaigns for user acquisition"
+    ],
+    "CRED": [
+        "A: Launch a lending product (CRED Cash) for high-trust users",
+        "B: Build a premium e-commerce marketplace (CRED Store)",
+        "C: Acquire a payment gateway to control infrastructure",
+        "D: Expand the app internationally to US/UK markets"
+    ]
+}
 
-# 3. Sidebar to separate the Host (You) from the Students
-role = st.sidebar.radio("Select your view:", ["Student (Vote Here)", "Host (Board View)"])
-
-# ==========================================
-# STUDENT VIEW (What they see on their phones)
-# ==========================================
-if role == "Student (Vote Here)":
-    st.header("Cast Your Investment Vote!")
-    
-    name = st.text_input("Enter your name (e.g., Shark Rahul):")
-    
-    case = st.radio("Which startup pitch are we evaluating?", 
-                    ["Case 1: The Scanned Menus", "Case 2: The Exclusive Club"])
-    
-    st.markdown("---")
-    st.subheader("Select your offer:")
-    
-    # Show context based on the case
-    if "Case 1" in case:
-        offer = st.radio("Options for Case 1:", 
-                         ["Offer A: ₹5 Crores for 1%", 
-                          "Offer B: ₹5 Crores for 15%", 
-                          "Offer C: ₹5 Crores for 30%", 
-                          "Offer D: ₹4.7 Crores for maximum control"])
+def load_votes():
+    # If the file exists, read it. If not, create a fresh scorecard.
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r") as f:
+            return json.load(f)
     else:
-        offer = st.radio("Options for Case 2:", 
-                         ["Offer A: ₹10 Crores for 20%", 
-                          "Offer B: ₹50 Crores for 30%", 
-                          "Offer C: ₹220 Crores before the app even launches", 
-                          "Offer D: ZERO. I'm out."])
-    
-    if st.button("Submit My Offer 💸"):
-        if name:
-            c.execute("INSERT INTO votes (name, case_study, offer) VALUES (?, ?, ?)", 
-                      (name, case, offer.split(":")[0])) 
-            conn.commit()
-            st.success(f"Deal logged, {name}! Look at the board to see how everyone else voted.")
-        else:
-            st.error("Please enter your name first!")
+        return {
+            "Zomato (formerly Foodiebay)": {opt: 0 for opt in CASES["Zomato (formerly Foodiebay)"]},
+            "CRED": {opt: 0 for opt in CASES["CRED"]}
+        }
 
-# ==========================================
-# HOST VIEW (What you project on the board)
-# ==========================================
-elif role == "Host (Board View)":
-    st.header("Live Investment Board")
+def save_vote(case, option):
+    votes = load_votes()
+    votes[case][option] += 1
+    with open(DB_FILE, "w") as f:
+        json.dump(votes, f)
+
+# --- 2. STREAMLIT APP LAYOUT ---
+st.set_page_config(page_title="VC Shark Tank", layout="centered")
+
+st.title("🦈 Mini Shark Tank: The VC Decision")
+
+# Sidebar navigation
+view_mode = st.sidebar.radio("Select View:", ["Student (Vote Here)", "Host (Board View)"])
+
+# --- 3. STUDENT VIEW (PHONES) ---
+if view_mode == "Student (Vote Here)":
+    st.subheader("Cast Your Investment Vote")
+    st.write("Select a startup case and vote on where you would deploy your VC capital.")
     
-    case = st.selectbox("Select pitch to track:", ["Case 1: The Scanned Menus", "Case 2: The Exclusive Club"])
+    selected_case = st.selectbox("Which Case are we discussing?", list(CASES.keys()))
     
-    df = pd.read_sql_query(f"SELECT * FROM votes WHERE case_study='{case}'", conn)
+    st.write("### Your Options:")
+    selected_option = st.radio("Where should the money go?", CASES[selected_case])
     
-    col1, col2 = st.columns([2, 1])
+    if st.button("Submit My Vote!"):
+        save_vote(selected_case, selected_option)
+        st.success("✅ Vote registered! Look at the main screen for live results.")
+
+# --- 4. HOST VIEW (PROJECTOR) ---
+elif view_mode == "Host (Board View)":
+    st.subheader("Live Boardroom Results")
     
-    with col1:
-        st.subheader("Market Sentiment (Live Votes)")
-        if not df.empty:
-            vote_counts = df['offer'].value_counts().reset_index()
-            vote_counts.columns = ['Offer', 'Votes']
-            st.bar_chart(vote_counts.set_index('Offer'))
-            
-            with st.expander("See who invested"):
-                st.dataframe(df, use_container_width=True)
-        else:
-            st.info("Waiting for the sharks to make their offers...")
-            
-    with col2:
-        st.subheader("The Big Reveal")
-        st.write("Wait for everyone to vote before clicking!")
+    selected_case = st.selectbox("Select Case to Display:", list(CASES.keys()))
+    
+    # Add a refresh button for the presenter
+    st.button("🔄 Refresh Live Votes")
+    
+    # Load and display the data
+    current_votes = load_votes()
+    case_data = current_votes[selected_case]
+    
+    # Convert to a Pandas DataFrame for the chart
+    df = pd.DataFrame({
+        "Options": list(case_data.keys()),
+        "Votes": list(case_data.values())
+    })
+    
+    # Clean up option names for the chart display (removes the A: B: C: D:)
+    df["Short Labels"] = df["Options"].apply(lambda x: x.split(":")[1].strip())
+    df.set_index("Short Labels", inplace=True)
+    
+    # Display the chart
+    if df["Votes"].sum() == 0:
+        st.info("Waiting for the board to cast their votes...")
+    else:
+        st.bar_chart(df["Votes"])
         
-        if st.button("Reveal the Startup & The Real Deal 🚨"):
-            st.balloons()
-            if "Case 1" in case:
-                st.success("**Startup: ZOMATO (Foodiebay)**")
-                st.markdown("""
-                **The Real Deal:** A mix of **Offer C & D**. 
-                
-                In 2010, Sanjeev Bikhchandani invested roughly ₹4.7 Crores but took a massive **~30% stake** because the risk was so high!
-                """)
-            else:
-                st.success("**Startup: CRED**")
-                st.markdown("""
-                **The Real Deal: Offer C**. 
-                
-                In 2018, Kunal Shah raised roughly **$30 Million (₹220 Crores)** in seed funding before the app was even fully launched. VCs wanted access to India's top 1% wealthiest consumers!
-                """)
-                
-    st.markdown("---")
-    if st.button("Clear All Data (Reset for next class)"):
-        c.execute("DELETE FROM votes")
-        conn.commit()
-        st.rerun()
+    st.write(f"**Total Capital Deployed (Votes):** {df['Votes'].sum()}")
